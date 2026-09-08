@@ -1,0 +1,3 @@
+# Let the fanctl group write the intake fan's PWM on the Thelio Io board, and nothing else.
+# add|change: the board re-enumerates on USB disturbances, which recreates the attribute.
+ACTION=="add|change", SUBSYSTEM=="hwmon", ATTR{name}=="system76_io", RUN+="/bin/chgrp fanctl '/sys$devpath/pwm2'", RUN+="/bin/chmod 0664 '/sys$devpath/pwm2'"

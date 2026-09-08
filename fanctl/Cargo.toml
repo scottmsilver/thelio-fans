@@ -1,0 +1,28 @@
+[package]
+name = "fanctl"
+version = "0.1.0"
+edition = "2021"
+description = "Unprivileged intake-fan controller for a System76 Thelio Mira"
+license = "MIT"
+publish = false
+
+[[bin]]
+name = "fanctl"
+path = "src/main.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+libc = "0.2"
+nvml-wrapper = "0.13"
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

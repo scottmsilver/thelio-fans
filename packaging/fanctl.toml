@@ -1,0 +1,17 @@
+# fanctl configuration, installed as /etc/fanctl.toml. Every key is optional; these are the
+# defaults. Temperatures in Celsius, duties in percent. The fan never goes below floor_pct
+# (minimum 10). start_pct is applied for start_seconds at startup and whenever the board
+# reappears, so a stopped fan actually starts.
+# curve = [[50, 25], [58, 30], [65, 40], [75, 55], [82, 75], [88, 100]]
+# floor_pct = 25
+# start_pct = 45
+# start_seconds = 3
+# ema_seconds = 8
+# deadband_c = 2
+# spindown_delay_s = 30
+# max_decrease_pct_per_s = 3
+# reassert_s = 60
+# sensor_failures_to_panic = 5
+# write_failures_to_exit = 10
+# exit_duty_pct = 50       # minimum 25
+# interval_s = 1           # maximum 5 (the watchdog is 30 s)

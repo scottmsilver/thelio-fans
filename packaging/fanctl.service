@@ -1,0 +1,54 @@
+[Unit]
+Description=Thelio intake fan controller (unprivileged)
+Documentation=file:///opt/fanctl/README.md
+After=systemd-udev-settle.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=notify
+User=fanctl
+Group=fanctl
+ExecStart=/opt/fanctl/bin/fanctl run
+# Runs as the service user after ANY exit, including watchdog kills, OOM and crashes,
+# and writes the exit duty. The driver has no auto mode to fall back to.
+ExecStopPost=/opt/fanctl/bin/fanctl safe
+Restart=always
+RestartSec=2
+WatchdogSec=30
+TimeoutStopSec=10
+RuntimeDirectory=fanctl
+RuntimeDirectoryMode=0755
+UMask=0022
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateNetwork=yes
+RestrictAddressFamilies=AF_UNIX
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+DevicePolicy=closed
+DeviceAllow=/dev/nvidiactl rw
+DeviceAllow=/dev/nvidia0 rw
+MemoryMax=64M
+TasksMax=16
+# ProtectKernelTunables is deliberately absent: it would mount /sys read-only.
+# The permission bit on pwm2 (set by 60-fanctl.rules) is the real write boundary; the
+# service can also write its RuntimeDirectory and its private /tmp, nothing else.
+
+[Install]
+WantedBy=multi-user.target
