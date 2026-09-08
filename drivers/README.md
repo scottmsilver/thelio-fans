@@ -28,7 +28,7 @@ Facts that matter when it misbehaves, established on 2026‑09‑07:
   wire on top. Since 2026‑09‑07 the CPU fans are on the motherboard header and
   CPUOUT0/CPUIN0 are unused.
 
-Full write-up: docs/2026-09-07-thelio-io-diagnosis.md
+Full write-up: [docs/2026-09-07-thelio-io-diagnosis.md](../docs/2026-09-07-thelio-io-diagnosis.md)
 
 ## it87 (vendored, out of tree)
 

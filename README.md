@@ -81,12 +81,11 @@ fanctl/           Rust crate: config, controller, sensors, pwm, service, state, 
 fanctl/tests/     cargo integration tests, one file per module
 packaging/        udev rule, systemd unit, default config, build/install/uninstall scripts
 drivers/          it87 submodule and the /etc files installed on this host
-docs/             fanwatch.md, plus design specs and implementation plans under superpowers/
+docs/             fanwatch.md, the Io board diagnosis, and design specs and plans under superpowers/
 ```
 
 Design documents: [fan dashboard](docs/superpowers/specs/2026-09-07-fan-dashboard-design.md)
-and [fanctl](docs/superpowers/specs/2026-09-08-fanctl-design.md)
-. The
+and [fanctl](docs/superpowers/specs/2026-09-08-fanctl-design.md). The
 fanctl spec lists the fail-safes and credits each borrowed control behaviour.
 
 ## Development
@@ -102,6 +101,11 @@ Public items are documented in both languages: `fanctl/src/lib.rs` sets
 `#![warn(missing_docs)]`, and every public class and function in `fanwatch` carries a
 docstring. The two programs share one interface, the state file `fanctl` writes and
 `fanwatch` reads; its keys are listed in [fanctl/README.md](fanctl/README.md#state-file).
+
+## License
+
+MIT, see [LICENSE](LICENSE). The vendored `it87` driver under `drivers/it87` is a
+separate GPL-2.0 project; nothing here links against it.
 
 ## Status
 
