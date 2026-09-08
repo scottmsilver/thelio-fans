@@ -1,4 +1,6 @@
-"""Compact curses rendering of a fan snapshot. Rendering is pure; terminal I/O lives in run()."""
+"""Compact curses dashboard: braille charts for every temperature and fan line, a per-core
+heat strip, then one row per fan and per temperature. Rendering functions are pure and
+return coloured spans; terminal I/O lives in run()."""
 
 from __future__ import annotations
 
@@ -8,10 +10,13 @@ import math
 import textwrap
 import time
 from collections import defaultdict, deque
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass, replace
 from datetime import datetime
 from enum import IntEnum
 
+from fanwatch import chart
+from fanwatch.chart import Series, Span
 from fanwatch.gpu import Gpu
 from fanwatch.probe import (
     GPU_CHIP,
@@ -26,14 +31,18 @@ from fanwatch.probe import (
 )
 from fanwatch.text import sanitize
 
-HISTORY = 120
+HISTORY = 600  # samples kept per series: ten minutes at the default interval
 MIN_HEIGHT, MIN_WIDTH = 8, 38
-TREND_MIN_WIDTH = 100  # sparkline column appears at this terminal width
+CHART_MIN_HEIGHT, CHART_MIN_WIDTH = 24, 60  # terminal size below which charts are skipped
 HEADER_ROWS, FOOTER_ROWS = 3, 1
 NAME_W, SOURCE_W, RPM_W, DUTY_W, BAR_W = 28, 14, 7, 5, 12
 THROTTLE_KEY = "throttle"  # history key for the package throttle counter
+CPU_KEY = "coretemp:Package id 0"
+HEAT_BASE = 20  # first colour pair of the 16-step heat gradient
 # Chips whose temperatures mirror another chip's; hidden while that chip is present.
 DUPLICATE_TEMP_CHIPS = {"gigabyte_wmi": "it8689"}
+# Chips that never say anything useful on this machine: ACPI chassis zones, the wifi card.
+NOISE_TEMP_CHIPS = {"acpitz", "iwlwifi_1"}
 
 
 class Color(IntEnum):
@@ -43,19 +52,98 @@ class Color(IntEnum):
     YELLOW = 3
     RED = 4
     MUTED = 5
+    BLUE = 6
+    MAGENTA = 7
 
+
+PALETTE = (Color.YELLOW, Color.CYAN, Color.GREEN, Color.MAGENTA, Color.BLUE, Color.RED)
+# 256-colour indices for the heat gradient, cool blue through green and yellow to red,
+# and the 8-colour fallback.
+HEAT_256 = (27, 33, 39, 45, 51, 49, 47, 82, 118, 154, 190, 226, 220, 214, 208, 196)
+HEAT_8 = (4, 4, 4, 6, 6, 6, 2, 2, 2, 3, 3, 3, 1, 1, 1, 1)
 
 Line = tuple[str, Color]
 Histories = Mapping[str, Sequence[int | None]]
 
 
-def sparkline(values: Iterable[int | None], width: int) -> str:
-    samples = list(values)[-max(1, width) :]
-    maximum = max((v for v in samples if v is not None), default=1) or 1
-    bars = "▁▂▃▄▅▆▇█"
-    return "".join(
-        "·" if v is None else bars[min(7, max(0, int(v / maximum * 7)))] for v in samples
+# ---------------------------------------------------------------- charts
+
+
+@dataclass(frozen=True, slots=True)
+class ChartGroup:
+    title: str
+    series: list[Series]
+    y_min: float
+    y_max: float
+    limit: float | None = None
+
+
+def _paint(series: list[Series]) -> list[Series]:
+    """Assign palette colours in order. The first series is the most important one."""
+    return [replace(s, color=PALETTE[i % len(PALETTE)]) for i, s in enumerate(series)]
+
+
+def _temp_name(t: Temperature) -> str:
+    if t.key == CPU_KEY:
+        return "CPU package"
+    if t.chip == GPU_CHIP:
+        return f"GPU {t.label}"
+    return f"{t.chip} {t.label}"
+
+
+def temperature_group(snapshot: Snapshot, histories: Histories) -> ChartGroup:
+    """CPU package, GPU, NVMe, then each other chip's first sensor. Cores are the strip."""
+    chosen: list[Series] = []
+    seen_chips: set[str] = set()
+    ordered = sorted(
+        snapshot.temperatures,
+        key=lambda t: (t.key != CPU_KEY, t.chip != GPU_CHIP, t.chip != "nvme", t.chip, t.label),
     )
+    limit = None
+    for t in ordered:
+        if t.chip == "coretemp" and t.key != CPU_KEY:
+            continue
+        if t.chip in DUPLICATE_TEMP_CHIPS or t.chip in NOISE_TEMP_CHIPS or t.chip in seen_chips:
+            continue
+        if not any(v is not None for v in histories.get(t.key, [])):
+            continue  # never reads: nothing to draw
+        seen_chips.add(t.chip)
+        name = "CPU" if t.key == CPU_KEY else _temp_name(t)
+        # The CPU line shares the core strip's heat colouring; other lines get the palette.
+        chosen.append(Series(name, histories.get(t.key, []), 0, "°C", heat=t.key == CPU_KEY))
+        if t.key == CPU_KEY:
+            limit = t.maximum
+    return ChartGroup("TEMPERATURES", _paint(chosen), 0, 100, limit)
+
+
+def fan_group(snapshot: Snapshot, histories: Histories) -> ChartGroup:
+    """Every fan that has ever reported RPM, on a shared RPM axis."""
+    chosen: list[Series] = []
+    top = 0.0
+    for fan in snapshot.fans:
+        history = histories.get(fan.key, [])
+        readings = [v for v in history if v is not None]
+        if not readings or max(readings) == 0:
+            continue
+        top = max(top, float(max(readings)))
+        chosen.append(Series(fan.name, history, 0, " rpm"))
+    y_max = max(500.0, math.ceil(top / 500) * 500)
+    return ChartGroup("FANS", _paint(chosen), 0, y_max)
+
+
+def chart_groups(snapshot: Snapshot, histories: Histories) -> list[ChartGroup]:
+    """Same chart, stamped out per group of lines; drawn top to bottom."""
+    return [temperature_group(snapshot, histories), fan_group(snapshot, histories)]
+
+
+def core_readings(snapshot: Snapshot) -> list[tuple[str, float | None]]:
+    cores = [
+        t for t in snapshot.temperatures if t.chip == "coretemp" and t.label.startswith("Core")
+    ]
+    return [(t.label, t.celsius) for t in sorted(cores, key=lambda t: int(t.label.split()[-1]))]
+
+
+# ---------------------------------------------------------------- rows
 
 
 def _status_color(status: str) -> Color:
@@ -71,12 +159,6 @@ def _status_color(status: str) -> Color:
 def _source(fan: Fan) -> str:
     chip = "Io" if fan.chip == "system76_io" else fan.chip
     return f"{chip} {fan.label or fan.channel}"
-
-
-def _trend(history: Sequence[int | None], width: int) -> str:
-    if width < TREND_MIN_WIDTH or not history:
-        return ""
-    return "  " + sparkline(history, min(24, width - TREND_MIN_WIDTH + 16))
 
 
 def _stalled(fan: Fan, history: Sequence[int | None]) -> bool:
@@ -98,7 +180,7 @@ def alerts_for(snapshot: Snapshot, histories: Histories) -> list[str]:
     return alerts
 
 
-def _fan_row(fan: Fan, history: Sequence[int | None], width: int) -> Line:
+def _fan_row(fan: Fan, history: Sequence[int | None]) -> Line:
     name = f"{fan.name[:NAME_W]:<{NAME_W}} {_source(fan)[:SOURCE_W]:<{SOURCE_W}}"
     if fan.status == "EMPTY":
         note = f" · {fan.note}" if fan.note else ""
@@ -120,28 +202,7 @@ def _fan_row(fan: Fan, history: Sequence[int | None], width: int) -> Line:
             tag, color = "  STALLED", Color.RED
         else:
             tag, color = "  starting", Color.YELLOW
-    return (f"  {name} {rpm:>{RPM_W}} {duty:>{DUTY_W}}{bar}{tag}{_trend(history, width)}", color)
-
-
-def _fan_lines(snapshot: Snapshot, histories: Histories, width: int) -> list[Line]:
-    if not snapshot.fans:
-        return [("  No fan sensors available.", Color.YELLOW)]
-    lines: list[Line] = []
-    unlabelled_empty = [f for f in snapshot.fans if f.status == "EMPTY" and f.label is None]
-    for fan in snapshot.fans:
-        if fan not in unlabelled_empty:
-            lines.append(_fan_row(fan, histories.get(fan.key, []), width))
-    by_chip: dict[str, list[str]] = defaultdict(list)
-    for fan in unlabelled_empty:
-        by_chip[fan.chip].append(fan.channel)
-    for chip, channels in by_chip.items():
-        plural = "s" if len(channels) != 1 else ""
-        span = f"{channels[0]}-{channels[-1]}" if len(channels) > 2 else ", ".join(channels)
-        label = f"{len(channels)} empty header{plural}"
-        lines.append((f"  {label:<{NAME_W}} {chip} {span}", Color.MUTED))
-    if snapshot.controller:
-        lines.append(_controller_row(snapshot.controller))
-    return lines
+    return (f"  {name} {rpm:>{RPM_W}} {duty:>{DUTY_W}}{bar}{tag}", color)
 
 
 def _controller_row(state: dict[str, object]) -> Line:
@@ -173,6 +234,27 @@ def _controller_row(state: dict[str, object]) -> Line:
     return (text, Color.YELLOW if stale else Color.MUTED)
 
 
+def _fan_lines(snapshot: Snapshot, histories: Histories) -> list[Line]:
+    if not snapshot.fans:
+        return [("  No fan sensors available.", Color.YELLOW)]
+    lines: list[Line] = []
+    unlabelled_empty = [f for f in snapshot.fans if f.status == "EMPTY" and f.label is None]
+    for fan in snapshot.fans:
+        if fan not in unlabelled_empty:
+            lines.append(_fan_row(fan, histories.get(fan.key, [])))
+    by_chip: dict[str, list[str]] = defaultdict(list)
+    for fan in unlabelled_empty:
+        by_chip[fan.chip].append(fan.channel)
+    for chip, channels in by_chip.items():
+        plural = "s" if len(channels) != 1 else ""
+        span = f"{channels[0]}-{channels[-1]}" if len(channels) > 2 else ", ".join(channels)
+        label = f"{len(channels)} empty header{plural}"
+        lines.append((f"  {label:<{NAME_W}} {chip} {span}", Color.MUTED))
+    if snapshot.controller:
+        lines.append(_controller_row(snapshot.controller))
+    return lines
+
+
 def _fmt(v: float | None) -> str:
     return f"{v:.1f}" if v is not None else "—"
 
@@ -187,15 +269,7 @@ def _temp_color(t: Temperature) -> Color:
     return Color.NORMAL
 
 
-def _temp_name(t: Temperature) -> str:
-    if t.chip == "coretemp" and t.label.startswith("Package"):
-        return "CPU package"
-    if t.chip == GPU_CHIP:
-        return f"GPU {t.label}"
-    return f"{t.chip} {t.label}"
-
-
-def _temperature_lines(snapshot: Snapshot, histories: Histories, width: int) -> list[Line]:
+def _temperature_lines(snapshot: Snapshot) -> list[Line]:
     chips = {t.chip for t in snapshot.temperatures}
     hidden = {dup for dup, primary in DUPLICATE_TEMP_CHIPS.items() if primary in chips}
     temps = sorted(
@@ -217,13 +291,7 @@ def _temperature_lines(snapshot: Snapshot, histories: Histories, width: int) -> 
             continue
         name = _temp_name(t)[:NAME_W]
         now, mx, crit = _fmt(t.celsius), _fmt(t.maximum), _fmt(t.critical)
-        lines.append(
-            (
-                f"  {name:<{NAME_W}} {now:>6} {mx:>6} {crit:>6}"
-                + _trend(histories.get(t.key, []), width),
-                _temp_color(t),
-            )
-        )
+        lines.append((f"  {name:<{NAME_W}} {now:>6} {mx:>6} {crit:>6}", _temp_color(t)))
     if cores:
         readings = [t.celsius for t in cores if t.celsius is not None]
         span = f"{min(readings):.0f}-{max(readings):.0f}" if readings else "—"
@@ -297,24 +365,22 @@ def status_line(
 
 
 def build_lines(snapshot: Snapshot, histories: Histories, width: int) -> list[Line]:
-    """Build the dashboard body, independent of terminal I/O."""
+    """The table body, independent of terminal I/O. Charts are drawn separately."""
     width = max(1, width)
     lines: list[Line] = []
 
     def add(text: str = "", color: Color = Color.NORMAL) -> None:
         lines.append((text[:width], color))
 
-    trend = "TREND" if width >= TREND_MIN_WIDTH else ""
     add(
-        f"  {'FAN':<{NAME_W}} {'SOURCE':<{SOURCE_W}} {'RPM':>{RPM_W}} {'DUTY':>{DUTY_W}}"
-        f" {'':<{BAR_W}}  {trend}",
+        f"  {'FAN':<{NAME_W}} {'SOURCE':<{SOURCE_W}} {'RPM':>{RPM_W}} {'DUTY':>{DUTY_W}}",
         Color.CYAN,
     )
-    for text, color in _fan_lines(snapshot, histories, width):
+    for text, color in _fan_lines(snapshot, histories):
         add(text, color)
     add()
-    add(f"  {'TEMPERATURE':<{NAME_W}} {'NOW':>6} {'MAX':>6} {'CRIT':>6}  {trend}", Color.CYAN)
-    for text, color in _temperature_lines(snapshot, histories, width):
+    add(f"  {'TEMPERATURE':<{NAME_W}} {'NOW':>6} {'MAX':>6} {'CRIT':>6}", Color.CYAN)
+    for text, color in _temperature_lines(snapshot):
         add(text, color)
     if snapshot.throttle is not None:
         text, color = _throttle_row(snapshot.throttle, throttling_now(snapshot, histories))
@@ -332,6 +398,9 @@ def build_lines(snapshot: Snapshot, histories: Histories, width: int) -> list[Li
     return lines
 
 
+# ---------------------------------------------------------------- terminal
+
+
 def _init_colors() -> None:
     if not curses.has_colors():
         return
@@ -340,28 +409,67 @@ def _init_colors() -> None:
     with contextlib.suppress(curses.error):
         curses.use_default_colors()
         background = -1
-    palette = (
-        curses.COLOR_CYAN,
-        curses.COLOR_GREEN,
-        curses.COLOR_YELLOW,
-        curses.COLOR_RED,
-        curses.COLOR_WHITE,
-    )
-    for index, color in enumerate(palette, 1):
-        curses.init_pair(index, color, background)
+    palette = {
+        Color.CYAN: curses.COLOR_CYAN,
+        Color.GREEN: curses.COLOR_GREEN,
+        Color.YELLOW: curses.COLOR_YELLOW,
+        Color.RED: curses.COLOR_RED,
+        Color.MUTED: curses.COLOR_WHITE,
+        Color.BLUE: curses.COLOR_BLUE,
+        Color.MAGENTA: curses.COLOR_MAGENTA,
+    }
+    for pair, color in palette.items():
+        curses.init_pair(pair, color, background)
+    gradient = HEAT_256 if curses.COLORS >= 256 else HEAT_8
+    for level, color in enumerate(gradient):
+        with contextlib.suppress(curses.error):
+            curses.init_pair(HEAT_BASE + level, color, background)
 
 
 def _record(histories: defaultdict[str, deque[int | None]], snapshot: Snapshot) -> None:
-    live = {f.key for f in snapshot.fans} | {t.key for t in snapshot.temperatures}
-    live.add(THROTTLE_KEY)
-    for stale in [k for k in histories if k not in live]:
-        del histories[stale]
+    live = {THROTTLE_KEY}
     for fan in snapshot.fans:
+        live.update((fan.key, f"{fan.key}:duty"))
         histories[fan.key].append(fan.rpm)
+        histories[f"{fan.key}:duty"].append(None if fan.duty is None else round(fan.duty))
     for t in snapshot.temperatures:
+        live.add(t.key)
         histories[t.key].append(None if t.celsius is None else round(t.celsius))
     if snapshot.throttle is not None:
         histories[THROTTLE_KEY].append(snapshot.throttle.package_events)
+    for stale in [k for k in histories if k not in live]:
+        del histories[stale]
+
+
+def draw_chart(
+    put: Callable[..., None],
+    put_spans: Callable[..., None],
+    top: int,
+    group: ChartGroup,
+    width: int,
+    height: int,
+    interval: float,
+) -> int:
+    """Title and legend, the braille rows, the time axis. Returns the next free row."""
+    legend = chart.legend(
+        group.series, limit=group.limit, limit_color=Color.RED, heat_base=HEAT_BASE
+    )
+    put_spans(top, [(f"{group.title}  ", Color.CYAN), *legend])
+    rows = chart.render_chart(
+        group.series,
+        width=width,
+        height=height,
+        y_min=group.y_min,
+        y_max=group.y_max,
+        limit=group.limit,
+        limit_color=Color.RED,
+        heat_base=HEAT_BASE,
+    )
+    for i, row_spans in enumerate(rows):
+        put_spans(top + 1 + i, row_spans)
+    axis = chart.x_labels(width=width, samples=HISTORY, interval_s=interval)
+    put(top + 1 + height, "  " + axis, Color.MUTED)
+    return top + 2 + height
 
 
 def run(screen: curses.window, interval: float) -> None:
@@ -372,20 +480,37 @@ def run(screen: curses.window, interval: float) -> None:
     screen.timeout(100)
     _init_colors()
 
+    def attr_for(color: int, bold: bool = False) -> int:
+        attr = curses.color_pair(color) if curses.has_colors() and color else 0
+        if bold:
+            attr |= curses.A_BOLD
+        if color == Color.MUTED:
+            attr |= curses.A_DIM
+        return attr
+
     def put(row: int, text: str, color: Color = Color.NORMAL, bold: bool = False) -> None:
         height, width = screen.getmaxyx()
         if not (0 <= row < height and width > 1):
             return
         # Sensor labels are untrusted terminal text; drop control characters.
         text = "".join(c if c.isprintable() else "?" for c in text)
-        attr = curses.color_pair(color) if curses.has_colors() else 0
-        if bold:
-            attr |= curses.A_BOLD
-        if color == Color.MUTED:
-            attr |= curses.A_DIM
         # A concurrent resize can invalidate the coordinates.
         with contextlib.suppress(curses.error):
-            screen.addnstr(row, 0, text, width - 1, attr)
+            screen.addnstr(row, 0, text, width - 1, attr_for(color, bold))
+
+    def put_spans(row: int, spans: Sequence[Span], indent: int = 2) -> None:
+        height, width = screen.getmaxyx()
+        if not (0 <= row < height and width > indent + 1):
+            return
+        col = indent
+        for text, color in spans:
+            text = "".join(c if c.isprintable() else "?" for c in text)
+            room = width - 1 - col
+            if room <= 0:
+                break
+            with contextlib.suppress(curses.error):
+                screen.addnstr(row, col, text, room, attr_for(color))
+            col += min(len(text), room)
 
     histories: defaultdict[str, deque[int | None]] = defaultdict(lambda: deque(maxlen=HISTORY))
     snapshot: Snapshot | None = None
@@ -409,13 +534,26 @@ def run(screen: curses.window, interval: float) -> None:
         alerts = alerts_for(snapshot, histories)
         text, color = status_line(snapshot, live_throttle=live_throttle, alerts=alerts)
         put(1, text, color, bool(alerts) or live_throttle or color == Color.RED)
-        page = max(1, height - HEADER_ROWS - FOOTER_ROWS)
+        top = HEADER_ROWS
+        if height >= CHART_MIN_HEIGHT and width >= CHART_MIN_WIDTH:
+            groups = [g for g in chart_groups(snapshot, histories) if g.series]
+            # Both charts on a tall terminal, otherwise temperatures only.
+            shown = groups if height >= 2 * CHART_MIN_HEIGHT else groups[:1]
+            chart_h = min(10, max(5, (height - 18) // max(1, 2 * len(shown))))
+            for group in shown:
+                top = draw_chart(put, put_spans, top, group, width - 5, chart_h, interval)
+                if group.title == "TEMPERATURES":
+                    strip = chart.core_strip(core_readings(snapshot), heat_base=HEAT_BASE)
+                    put_spans(top, [("cores  ", Color.MUTED), *strip])
+                    top += 1
+                top += 1
+        page = max(1, height - top - FOOTER_ROWS)
         if height < MIN_HEIGHT or width < MIN_WIDTH:
             put(3, f"  Enlarge terminal to at least {MIN_WIDTH} x {MIN_HEIGHT}.", Color.YELLOW)
         else:
             lines = build_lines(snapshot, histories, width - 1)
             offset = max(0, min(offset, max(0, len(lines) - page)))
-            for row, (text, color) in enumerate(lines[offset : offset + page], HEADER_ROWS):
+            for row, (text, color) in enumerate(lines[offset : offset + page], top):
                 put(row, text, color)
         more = f"  {offset + 1}-{min(len(lines), offset + page)}/{len(lines)}" if offset else ""
         put(height - 1, f"  q quit · space pause · r refresh · ↑↓ scroll{more}", Color.MUTED)

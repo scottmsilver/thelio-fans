@@ -1,4 +1,4 @@
-from fanwatch.dashboard import build_lines, sparkline
+from fanwatch.dashboard import build_lines, chart_groups, core_readings
 from fanwatch.gpu import Gpu
 from fanwatch.probe import Fan, Snapshot, Temperature
 
@@ -45,7 +45,7 @@ def row(items: list[str], needle: str) -> str:
     return next(x for x in items if needle in x)
 
 
-def test_fan_is_one_row_with_source_rpm_duty_and_trend() -> None:
+def test_fan_is_one_row_with_source_rpm_and_duty() -> None:
     out = lines(Snapshot(0, "Box", fans=[fan()]), {"k": [600, 660]})
     r = row(out, "INTAKE FAN")
     for value in ("Io INTF", "660", "36%"):
@@ -53,14 +53,13 @@ def test_fan_is_one_row_with_source_rpm_duty_and_trend() -> None:
     assert "ROTATING" not in r  # rotating is the quiet default; only other states are tagged
     stopped = lines(Snapshot(0, "Box", fans=[fan(rpm=0, status="STOPPED")]))
     assert "starting" in row(stopped, "INTAKE FAN")  # commanded on, no history yet
-    assert "▁" in r or "█" in r  # sparkline present at 120 columns
     assert sum("INTAKE FAN" in x for x in out) == 1
+    assert "TREND" not in "\n".join(out)  # the chart replaced per-row sparklines
 
 
-def test_trend_column_dropped_on_narrow_terminal() -> None:
+def test_rows_fit_a_narrow_terminal() -> None:
     out = lines(Snapshot(0, "Box", fans=[fan()]), {"k": [600, 660]}, width=80)
-    r = row(out, "INTAKE FAN")
-    assert "660" in r and "█" not in r and "▁" not in r
+    assert "660" in row(out, "INTAKE FAN")
     assert all(len(x) <= 80 for x in out)
 
 
@@ -110,7 +109,7 @@ def test_temperatures_fold_cores_and_show_package_with_trend() -> None:
     hist: dict[str, list[int | None]] = {"coretemp:Package id 0": [50, 56]}
     out = lines(Snapshot(0, "Box", temperatures=temps), hist)
     pkg = row(out, "CPU package")
-    assert "56.0" in pkg and "80.0" in pkg and "100.0" in pkg and ("▁" in pkg or "█" in pkg)
+    assert "56.0" in pkg and "80.0" in pkg and "100.0" in pkg
     cores = row(out, "CPU cores (2)")
     assert "41" in cores and "58" in cores
     assert not any("Core 0" in x for x in out)
@@ -147,9 +146,52 @@ def test_empty_and_narrow_dashboard() -> None:
     assert "No fan" in "\n".join(out)
 
 
-def test_history_marks_missing_samples() -> None:
-    assert "·" in sparkline([100, None, 200], 20)
-    assert len(sparkline(list(range(100)), 10)) <= 10
+def test_chart_groups_cover_every_temperature_and_fan_line() -> None:
+    from fanwatch.dashboard import Color
+
+    temps = [
+        temp("coretemp", "Package id 0", 56.0, maximum=80.0),
+        temp("coretemp", "Core 0", 41.0),
+        temp("coretemp", "Core 4", 58.0),
+        temp("gpu", "RTX 3080 Ti", 36.0),
+        temp("nvme", "Composite", 50.0),
+        temp("it8689", "temp1", 41.0),
+        temp("gigabyte_wmi", "temp1", 41.0),  # duplicate chip: not charted
+        temp("acpitz", "temp1", 17.0),  # chassis ACPI zones: noise, not charted
+        temp("iwlwifi_1", "temp1", None),  # never reads: not charted
+    ]
+    cpu_fan = fan(
+        key="c",
+        chip="it8689",
+        channel="fan1",
+        label=None,
+        name="CPU FAN (motherboard header)",
+        rpm=1000,
+    )
+    snap = Snapshot(0, "Box", fans=[fan(), cpu_fan], temperatures=temps)
+    hist: dict[str, list[int | None]] = {
+        "coretemp:Package id 0": [50, 56],
+        "gpu:RTX 3080 Ti": [35, 36],
+        "nvme:Composite": [50, 50],
+        "it8689:temp1": [41, 41],
+        "k": [600, 660],
+        "c": [980, 1000],
+    }
+    temps_group, fans_group = chart_groups(snap, hist)
+    assert temps_group.title == "TEMPERATURES" and temps_group.limit == 80.0
+    assert [s.name for s in temps_group.series] == [
+        "CPU",
+        "GPU RTX 3080 Ti",
+        "nvme Composite",
+        "it8689 temp1",
+    ]
+    assert temps_group.series[0].color == Color.YELLOW
+    assert temps_group.series[1].color == Color.CYAN
+    assert list(temps_group.series[0].values) == [50, 56]
+    assert fans_group.title == "FANS" and fans_group.y_max == 1000
+    assert [s.name for s in fans_group.series] == ["INTAKE FAN", "CPU FAN (motherboard header)"]
+    assert len({s.color for s in fans_group.series}) == 2
+    assert core_readings(snap) == [("Core 0", 41.0), ("Core 4", 58.0)]
 
 
 def test_duplicate_wmi_temperatures_hidden_when_superio_chip_present() -> None:

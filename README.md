@@ -22,28 +22,33 @@ Dashboard keys: **↑/↓** or **j/k** scroll, **PgUp/PgDn** page, **g/G** top/b
 
 ## What it shows
 
-One compact screen: a row per fan, then a row per temperature, with a TREND sparkline
-column on terminals 100 columns or wider. The header line summarises alerts and the Io
+On a terminal at least 24 rows tall, two braille charts first: TEMPERATURES (CPU package,
+GPU, NVMe and each motherboard chip's first sensor, with a red dashed rule at the CPU's
+reported limit) and FANS (every fan's RPM), each with a coloured legend showing current
+values and a time axis covering the last ten minutes at the default interval. Under the
+temperatures chart a `cores` strip shows one block per CPU core, height and colour by
+heat, on a 16-step blue-to-red gradient when the terminal has 256 colours. Then a row per
+fan and a row per temperature. The header line summarises alerts and the Io
 board's USB state. A DIAGNOSTICS block appears only when there are alerts.
 
 ```
-  FAN                          SOURCE             RPM  DUTY               TREND
+  FAN                          SOURCE             RPM  DUTY
   CPU FAN via Io               Io CPUF          empty · no fan; CPU fans run from the motherboard header
-  INTAKE FAN                   Io INTF            660   36% ━━━━┄┄┄┄┄┄┄┄  ▄▄▄▄▄▄▄▄▄▄
+  INTAKE FAN                   Io INTF            660   36% ━━━━┄┄┄┄┄┄┄┄
   CPU FAN (motherboard header) it8689 fan1      1,019   26% ━━━┄┄┄┄┄┄┄┄┄  ▅▅▅▆▆▆▆▆▅▅
   GPU FAN 1                    nvml GPU0            0    0% ┄┄┄┄┄┄┄┄┄┄┄┄  idle
   GPU FAN 2                    nvml GPU1            ?    0% ┄┄┄┄┄┄┄┄┄┄┄┄  duty only
   5 empty headers              it8689 fan2-fan6
 
-  TEMPERATURE                     NOW    MAX   CRIT  TREND
-  CPU package                    51.0   80.0  100.0  ▃▃▄▄▅▄▄▃▃▃
+  TEMPERATURE                     NOW    MAX   CRIT
+  CPU package                    51.0   80.0  100.0
   CPU cores (12)                43-51
   CPU throttling               none since boot · 4.7/4.9 GHz
-  GPU RTX 3080 Ti                40.0   95.0   98.0  ▃▃▃▃▃▃▃▃▃▃
+  GPU RTX 3080 Ti                40.0   95.0   98.0
   GPU state                    P8 · 0% load · 14/350 W · 210/2100 MHz · 377/12288 MiB
   GPU throttling               none
   it8689 temp1                   41.0  127.0      —
-  nvme Composite                 53.9   89.8   94.8  ▃▃▃▃▃▃▃▃▃▃
+  nvme Composite                 53.9   89.8   94.8
 ```
 
 Fans come from every hwmon chip that exposes `fan*_input`. On this machine that is:
