@@ -6,28 +6,43 @@ use std::path::{Path, PathBuf};
 
 /// The fan must never be commanded to stop.
 pub const MIN_FLOOR_PCT: f64 = 10.0;
+/// The duty written on every exit must move real air, whatever the config says.
 pub const MIN_EXIT_PCT: f64 = 25.0;
 /// The unit's WatchdogSec is 30 s and TimeoutStopSec 10 s.
 pub const MAX_INTERVAL_S: f64 = 5.0;
 
+/// All tunables, one per key in `/etc/fanctl.toml`. Every field has a default; unknown
+/// keys are rejected; [`Config::validate`] bounds each value.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
     /// (temperature °C, duty %) points, linearly interpolated, clamped at the ends.
     pub curve: Vec<(f64, f64)>,
+    /// Lowest duty ever commanded; the curve is clamped up to it so the fan never stops.
     pub floor_pct: f64,
+    /// Time constant of the exponential moving average applied to the input temperature.
     pub ema_seconds: f64,
+    /// The curve is re-evaluated only when the smoothed temperature moves this far.
     pub deadband_c: f64,
+    /// After any increase, no decrease for this long.
     pub spindown_delay_s: f64,
+    /// Slew limit on decreases; increases are immediate.
     pub max_decrease_pct_per_s: f64,
+    /// Rewrite the PWM at least this often even when unchanged.
     pub reassert_s: f64,
+    /// Consecutive ticks without a CPU reading before the duty is forced to 100 %.
     pub sensor_failures_to_panic: u32,
+    /// Consecutive failed writes, with the device present, before the service exits.
     pub write_failures_to_exit: u32,
+    /// Duty written on every exit path and by `fanctl safe`.
     pub exit_duty_pct: f64,
     /// Duty applied for `start_seconds` at startup and whenever the board returns.
     pub start_pct: f64,
+    /// Length of the start kick.
     pub start_seconds: f64,
+    /// Seconds between ticks.
     pub interval_s: f64,
+    /// Where the JSON status file for the dashboard is written.
     pub state_path: PathBuf,
 }
 
@@ -59,6 +74,7 @@ impl Default for Config {
     }
 }
 
+/// A configuration that failed to parse or validate, with a message naming the key.
 #[derive(Debug)]
 pub struct ConfigError(pub String);
 
@@ -75,6 +91,9 @@ fn err<T>(msg: impl Into<String>) -> Result<T, ConfigError> {
 }
 
 impl Config {
+    /// Reject non-finite numbers, non-monotonic curves and out-of-range values. The bounds
+    /// are safety limits (the fan never stops, the exit duty moves air, a tick fits the
+    /// watchdog), not preferences.
     pub fn validate(&self) -> Result<(), ConfigError> {
         let numbers: Vec<(&str, f64)> = vec![
             ("floor_pct", self.floor_pct),

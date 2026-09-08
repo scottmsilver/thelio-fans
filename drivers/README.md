@@ -1,13 +1,17 @@
-# Kernel drivers used by fanwatch
+# Kernel drivers and host configuration
 
-Two drivers feed the dashboard. One ships with Pop!_OS, one is vendored here.
+Two drivers feed the dashboard, and one of them is also what fanctl writes through. One
+ships with Pop!_OS, one is vendored here.
 
 ## system76-io (ships with Pop!_OS)
 
 Package `system76-io-dkms`, module `system76_io`. Drives the Thelio Io v1 board
 (USB `1209:1776`, ATmega32U4) over a CDC-ACM style protocol and exposes hwmon
-`fan1` (CPUF) and `fan2` (INTF) with `pwm1`/`pwm2`. The `system76-power` daemon
-writes the PWM values once a second from the CPU package temperature.
+`fan1` (CPUF) and `fan2` (INTF) with `pwm1`/`pwm2`. Until 2026‑09‑08 the
+`system76-power` daemon wrote both PWM values once a second from a stepped curve; it is
+now masked and [fanctl](../fanctl/README.md) writes `pwm2` alone. The driver's
+`pwm*_enable` is a stub with no automatic mode, so whatever was last written is what the
+fan runs at.
 
 Facts that matter when it misbehaves, established on 2026‑09‑07:
 
@@ -57,5 +61,6 @@ sudo cp ../etc/modules-load.d/it87.conf /etc/modules-load.d/
 Update: `git -C drivers/it87 pull`, then `sudo make dkms` again. Remove:
 `sudo dkms remove it87/<version> --all` and delete the two files under `/etc`.
 
-The driver is read-only as used here. fanwatch never writes `pwm*` or any other
-attribute, and the `it8689` `pwm*_enable` values stay at 2 (automatic, BIOS curve).
+The it87 driver is read-only as used here. Neither fanwatch nor fanctl writes any
+`it8689` attribute, and its `pwm*_enable` values stay at 2 (automatic, BIOS curve). The
+CPU fans on the motherboard header are the BIOS's to drive.

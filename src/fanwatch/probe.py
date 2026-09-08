@@ -40,6 +40,9 @@ STALL_SAMPLES = 8  # consecutive zero-RPM samples while commanded on before call
 
 @dataclass(frozen=True, slots=True)
 class Fan:
+    """One fan channel. `rpm` and `duty` are None when unreadable; `status` is one of the
+    module constants (ROTATING, IDLE, STOPPED, EMPTY, UNKNOWN, FAULT, ALARM)."""
+
     key: str
     chip: str
     channel: str
@@ -55,6 +58,8 @@ class Fan:
 
 @dataclass(frozen=True, slots=True)
 class Temperature:
+    """One temperature sensor with its driver-reported limits, in °C."""
+
     chip: str
     label: str
     celsius: float | None
@@ -66,6 +71,8 @@ class Temperature:
 
 @dataclass(frozen=True, slots=True)
 class Controller:
+    """The Thelio Io board as seen on USB: port, device number and bound drivers."""
+
     port: str
     product: str
     usb_id: str
@@ -87,6 +94,9 @@ class Throttle:
 
 @dataclass(slots=True)
 class Snapshot:
+    """Everything read in one pass over sysfs plus the GPU and fanctl state. Pure data; the
+    dashboard, CLI and log modes all render from it."""
+
     timestamp: float
     machine: str
     fans: list[Fan] = field(default_factory=list)
@@ -102,6 +112,7 @@ MAX_INT = 10**9  # sysfs integers are kernel-formatted; anything beyond this is 
 
 
 def read_text(path: Path) -> str | None:
+    """A sysfs attribute as sanitised text, or None if unreadable."""
     try:
         raw = path.read_bytes()
     except OSError:
@@ -110,6 +121,7 @@ def read_text(path: Path) -> str | None:
 
 
 def read_int(path: Path, *, nonnegative: bool = False) -> tuple[int | None, str | None]:
+    """A sysfs integer attribute as (value, None) or (None, error text)."""
     try:
         value = int(path.read_text().strip())
     except (OSError, ValueError) as exc:

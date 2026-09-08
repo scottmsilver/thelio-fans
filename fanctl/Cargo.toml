@@ -3,6 +3,7 @@ name = "fanctl"
 version = "0.1.0"
 edition = "2021"
 description = "Unprivileged intake-fan controller for a System76 Thelio Mira"
+readme = "README.md"
 license = "MIT"
 publish = false
 

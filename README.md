@@ -1,143 +1,110 @@
-# fanwatch
+# Thelio fan monitor and controller
 
-A read-only terminal dashboard for the fans, temperatures and the Thelio Io board on
-this System76 Thelio Mira. It reads Linux hwmon and USB state from `/sys` and never
-writes to hardware.
+Everything about cooling on this System76 Thelio Mira: a read-only dashboard, an
+unprivileged controller for the one fan that needed it, the kernel driver that makes
+the motherboard's fan header visible, and the notes from the hardware diagnosis that
+started it all.
+
+| Part | What it is | Language | Docs |
+|---|---|---|---|
+| **fanwatch** | Terminal dashboard: every fan, every temperature, CPU and GPU throttling, the Io board's USB state, and charts over the last ten minutes. Never writes to hardware. | Python (`src/fanwatch/`) | [docs/fanwatch.md](docs/fanwatch.md) |
+| **fanctl** | Systemd service that drives the chassis intake fan on a smooth curve with a never-stop floor. Runs as its own user; the only file it can write on the whole system is that fan's PWM attribute. | Rust (`fanctl/`) | [fanctl/README.md](fanctl/README.md), [packaging/README.md](packaging/README.md) |
+| **drivers** | The out-of-tree `it87` module for the board's IT8689E chip, the host config that loads it, and what was learned about the Thelio Io board and its driver. | C (vendored), config | [drivers/README.md](drivers/README.md) |
+
+## Why this exists
+
+On 2026-09-07 the Thelio Io fan board kept dropping off USB. The diagnosis
+([write-up](docs/2026-09-07-thelio-io-diagnosis.md))
+found a loose USB0 cable after the board's connectors had been re-plugged in a
+different order: the Io microcontroller is powered only through that cable and has no
+firmware watchdog, so a marginal plug resets it. The same re-plug had swapped the
+board's CPUOUT0 and CPUIN0 connectors and the CPU fans had stopped. They were moved
+onto the motherboard's CPU_FAN header, where the BIOS drives them, and left there.
+
+Three things followed, and this repository holds all three:
+
+1. **See everything in one place.** The existing tools showed fragments: `sensors`
+   for hwmon, `nvidia-smi` for the GPU, nothing for the Io board's USB health, and
+   nothing at all for the fan header the CPU fans now hang off, because the in-kernel
+   `it87` driver does not know this board's chip. Result: `fanwatch` plus the
+   vendored `it87` driver.
+2. **Stop the intake fan cycling.** Once the dashboard existed it showed the chassis
+   intake fan switching on and off every few seconds at idle. That was
+   system76-power's fan curve, 0 % below 45 °C and 30 % above it with no hysteresis,
+   meeting a CPU that idles right at that line. Result: `fanctl`, which replaces that
+   one loop with a curve borrowed from the better open-source controllers (smoothing,
+   deadband, spin-down delay, slew limit, a 25 % floor so the fan never stops).
+3. **Do it with the least privilege that works.** A fan controller normally runs as
+   root. This one runs as the user `fanctl` with an empty capability set inside a
+   locked-down systemd sandbox, and a udev rule makes exactly one sysfs attribute,
+   the intake channel's `pwm2`, writable by its group. `sudo -u fanctl find /sys
+   -writable` lists one file. Everything is reversible: `packaging/uninstall.sh`
+   restores system76-power and the file's original permissions.
+
+## Who drives which fan
+
+| Fan | Driven by | Appears in fanwatch as |
+|---|---|---|
+| CPU fans (splitter on the motherboard CPU_FAN header) | BIOS fan curve | `CPU FAN (motherboard header)`, it8689 fan1 |
+| Chassis intake fan (Io board INTAKE0) | **fanctl** via Io `pwm2` | `INTAKE FAN`, Io INTF, plus an `Intake control` row |
+| GPU fans | NVIDIA driver | `GPU FAN 1/2`, nvml GPU0/GPU1 |
+| Io board CPUOUT0 channel | nothing attached since 2026-09-07 | `CPU FAN via Io`, shown as `empty` and never an alert |
+
+## Quick start
 
 ```sh
-uv sync            # creates .venv; one runtime dependency (nvidia-ml-py) plus dev tools
-uv run fanwatch    # live dashboard
+# Dashboard (no root, no writes)
+uv sync
+uv run fanwatch                 # live; --once, --json, --log for other modes
+
+# Controller: build and watch it decide before it touches anything
+packaging/build.sh
+fanctl/target/release/fanctl --config /nonexistent check
+fanctl/target/release/fanctl --config /nonexistent --state /tmp/fanctl-state.json dry-run --ticks 60
+
+# Controller: install as a service (root, once), verify, or roll back
+sudo packaging/install.sh
+systemctl status fanctl && cat /run/fanctl/state.json
+sudo packaging/uninstall.sh
 ```
 
-| Command | What it does |
-|---|---|
-| `uv run fanwatch` | live curses dashboard, refreshes every second |
-| `uv run fanwatch --interval 2` | slower refresh (0.2 to 3600 s) |
-| `uv run fanwatch --once` | one plain-text report |
-| `uv run fanwatch --json` | one JSON snapshot; check `alerts`, each fan's `status`, `throttle` and `gpu` |
-| `uv run fanwatch --log \| tee fan.log` | one line whenever the Io board's USB presence, a driver binding, a fan's status, the CPU throttle counter, or a GPU throttle reason changes, or an RPM moves by 5 % or more |
+Reading the motherboard header needs the `it87` module; see
+[drivers/README.md](drivers/README.md) for the DKMS install. Without it the dashboard
+still runs and simply lacks that row.
 
-Dashboard keys: **↑/↓** or **j/k** scroll, **PgUp/PgDn** page, **g/G** top/bottom,
-**Space** pause/resume, **r** refresh, **q** quit. Resize freely.
-
-## What it shows
-
-On a terminal at least 24 rows tall, two braille charts first: TEMPERATURES (CPU package,
-GPU, NVMe and each motherboard chip's first sensor, with a red dashed rule at the CPU's
-reported limit) and FANS (every fan's RPM), each with a coloured legend showing current
-values and a time axis covering the last ten minutes at the default interval. Under the
-temperatures chart a `cores` strip shows one block per CPU core, height and colour by
-heat, on a 16-step blue-to-red gradient when the terminal has 256 colours. Then a row per
-fan and a row per temperature. The header line summarises alerts and the Io
-board's USB state. A DIAGNOSTICS block appears only when there are alerts.
+## Layout
 
 ```
-  FAN                          SOURCE             RPM  DUTY
-  CPU FAN via Io               Io CPUF          empty · no fan; CPU fans run from the motherboard header
-  INTAKE FAN                   Io INTF            660   36% ━━━━┄┄┄┄┄┄┄┄
-  CPU FAN (motherboard header) it8689 fan1      1,019   26% ━━━┄┄┄┄┄┄┄┄┄  ▅▅▅▆▆▆▆▆▅▅
-  GPU FAN 1                    nvml GPU0            0    0% ┄┄┄┄┄┄┄┄┄┄┄┄  idle
-  GPU FAN 2                    nvml GPU1            ?    0% ┄┄┄┄┄┄┄┄┄┄┄┄  duty only
-  5 empty headers              it8689 fan2-fan6
-
-  TEMPERATURE                     NOW    MAX   CRIT
-  CPU package                    51.0   80.0  100.0
-  CPU cores (12)                43-51
-  CPU throttling               none since boot · 4.7/4.9 GHz
-  GPU RTX 3080 Ti                40.0   95.0   98.0
-  GPU state                    P8 · 0% load · 14/350 W · 210/2100 MHz · 377/12288 MiB
-  GPU throttling               none
-  it8689 temp1                   41.0  127.0      —
-  nvme Composite                 53.9   89.8   94.8
+src/fanwatch/     dashboard package: probe (sysfs), gpu (NVML), chart, dashboard, cli, state, text
+tests/            pytest suite against fake sysfs trees; no hardware needed
+fanctl/           Rust crate: config, controller, sensors, pwm, service, state, notify, main
+fanctl/tests/     cargo integration tests, one file per module
+packaging/        udev rule, systemd unit, default config, build/install/uninstall scripts
+drivers/          it87 submodule and the /etc files installed on this host
+docs/             fanwatch.md, plus design specs and implementation plans under superpowers/
 ```
 
-Fans come from every hwmon chip that exposes `fan*_input`. On this machine that is:
-
-| Chip | Channel | Shown as | Notes |
-|---|---|---|---|
-| `system76_io` | CPUF | CPU FAN via Io | permanently empty: the CPU fans were moved to the motherboard header on 2026‑09‑07, so 0 RPM here is expected and not an alert |
-| `system76_io` | INTF | INTAKE FAN | bottom case fan, driven by system76-power |
-| `it8689` | fan1 | CPU FAN (motherboard header) | driven by the BIOS fan curve. fan1 is the CPU_FAN channel on Gigabyte boards with this chip; the silkscreen cannot be verified from software |
-| `it8689` | fan2–fan6 | collapsed into one "empty headers" row | unlabelled channels reading 0 RPM |
-| `nvml` | GPU0, GPU1 | GPU FAN 1, GPU FAN 2 | the card's two fans via NVML. They stop at idle by design, shown dim as "idle", never an alert. NVML reports RPM for the first fan only; the second shows its duty percent tagged "duty only". NVML fan values are targets, not measured rotation |
-
-The 12 per-core coretemp readings fold into one "CPU cores" row showing the min–max
-span. The GPU rows come from NVML through the `nvidia-ml-py` package, NVIDIA's own Python
-binding over the `libnvidia-ml.so` that ships with the driver. No subprocess, no
-`nvidia-smi` parsing. The temperature row uses the card's slowdown and shutdown
-thresholds as MAX and CRIT. "GPU state" shows performance state, load, power draw
-against the enforced limit, graphics clock against its maximum, and memory in use.
-"GPU throttling" lists the live clock-event reasons (thermal, power cap, hardware
-slowdown, power brake) in red with a header warning when any is active, otherwise
-"none". If the driver or NVML is missing, the GPU rows are simply absent and `--json`
-reports `"gpu": null`.
-
-The "CPU throttling" row reads the kernel's thermal-throttle counters under
-`/sys/devices/system/cpu/cpu*/thermal_throttle/`: it stays dim while no throttle event
-has happened since boot, turns yellow with the event count and total time once one has,
-and turns red with a header warning when the counter moves between two refreshes, which
-means the CPU is throttling right now. The current and maximum frequency follow. The `gigabyte_wmi` temperatures are hidden because they mirror the `it8689` ones
-reading for reading; they reappear if the it87 driver is not loaded.
-
-Fan status: `ROTATING` means positive RPM. `IDLE` is zero RPM while the controller
-commands 0 % duty, shown dim; system76-power's curve switches the intake fan off below
-45 °C, so at idle this is the normal state and it never alerts. `STOPPED` is zero RPM
-while duty is commanded above 0 %: shown as "starting" in yellow for the first seconds,
-and as `STALLED` in red with a header alert once it has read zero for eight consecutive
-samples while commanded on. `EMPTY` is zero RPM on an unlabelled channel or a
-known-empty channel. `UNKNOWN` means the reading was missing or malformed. `FAULT` and
-`ALARM` are hardware flags. Rotation alone does not prove adequate cooling.
-
-Note that the intake fan visibly cycles on and off at idle. That is system76-power's
-fan curve (0 % below 45 °C, 30 % at 45 °C, no hysteresis) meeting a CPU that idles
-right at that line, not a fault.
-
-PWM duty is the same-numbered `pwm*` channel as a percentage of 255. It is the
-controller's setting, not measured fan speed. Temperatures are read from every hwmon
-chip, converted from millidegrees; MAX and CRIT are driver-reported limits.
-
-The USB panel finds the System76 Io board by its USB id `1209:1776` and reports the
-device number and which driver is bound to each interface. The Io microcontroller is
-powered only through its USB cable, so a changing device number or a missing board
-means the cable, not the software. See `docs/` and the diagnosis notes in
-[`drivers/README.md`](drivers/README.md).
-
-Known channel names live in one place, `KNOWN_CHANNELS` in `src/fanwatch/probe.py`.
+Design documents: [fan dashboard](docs/superpowers/specs/2026-09-07-fan-dashboard-design.md)
+and [fanctl](docs/superpowers/specs/2026-09-08-fanctl-design.md)
+. The
+fanctl spec lists the fail-safes and credits each borrowed control behaviour.
 
 ## Development
 
 ```sh
-uv run pytest          # fake-sysfs fixture tests, no hardware needed
-uv run ruff check .    # lint
-uv run ruff format .   # format
-uv run mypy            # strict typing over src and tests
+uv run pytest && uv run ruff check . && uv run ruff format . && uv run mypy   # Python
+(cd fanctl && cargo test && cargo clippy --all-targets -- -D warnings && cargo doc --no-deps)  # Rust
+uv export --no-hashes --no-emit-project | uvx pip-audit -r /dev/stdin   # dependency CVEs
+(cd fanctl && cargo audit)
 ```
 
-Layout: `src/fanwatch/probe.py` acquires a typed `Snapshot` from a sysfs root (any
-directory, which is how the tests work); `dashboard.py` renders it, with `build_lines`
-kept pure so it can be tested without a terminal; `cli.py` is the `fanwatch` entry
-point; `gpu.py` is the NVML reader. Python 3.12+.
+Public items are documented in both languages: `fanctl/src/lib.rs` sets
+`#![warn(missing_docs)]`, and every public class and function in `fanwatch` carries a
+docstring. The two programs share one interface, the state file `fanctl` writes and
+`fanwatch` reads; its keys are listed in [fanctl/README.md](fanctl/README.md#state-file).
 
-## fanctl: the intake fan controller
+## Status
 
-`fanctl/` is a small Rust program that replaces system76-power's on/off cycling of the
-intake fan with a smooth curve over the hotter of CPU package and GPU, with a 25 % floor
-so the fan never stops. It runs as an unprivileged systemd service whose only writable
-hardware attribute is the Io board's `pwm2` file. See
-[`packaging/README.md`](packaging/README.md) for build, install, verify and rollback,
-and `docs/superpowers/specs/2026-09-08-fanctl-design.md` for the design and the credits
-for the borrowed control behaviours. While it runs, the dashboard shows an
-`Intake control` row with its smoothed temperature, duty and last reason.
-
-```sh
-packaging/build.sh
-fanctl/target/release/fanctl --config /nonexistent check      # what it sees
-fanctl/target/release/fanctl --config /nonexistent dry-run    # decisions once a second, no writes
-```
-
-## Kernel drivers
-
-Reading the motherboard's own fan header needs the out-of-tree `it87` module, because
-the in-kernel driver does not know the board's IT8689E chip. The checkout and the
-config files installed on this host are under `drivers/`; see
-[`drivers/README.md`](drivers/README.md) for the install steps.
+As of 2026-09-08 on this host: `it87` is installed through DKMS, `fanctl` is enabled
+and running, and `com.system76.PowerDaemon.service` is masked. The intake fan holds a
+steady 25 % at idle instead of cycling.

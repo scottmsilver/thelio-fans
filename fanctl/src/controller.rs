@@ -8,15 +8,23 @@
 
 use crate::config::Config;
 
+/// The temperature assumed once the CPU sensor has been missing for too long.
 pub const PANIC_TEMP_C: f64 = 100.0;
 
+/// What one tick decided. The caller writes `pwm` only when `write` is set.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Decision {
+    /// Duty now applied, in percent, after kick, spin-down delay and slew limit.
     pub duty_pct: f64,
+    /// `duty_pct` as the 0..=255 byte the driver takes.
     pub pwm: u8,
+    /// Whether the byte should be written this tick (changed, re-assert or mismatch).
     pub write: bool,
+    /// Comma-separated list of what happened, e.g. `kick, increase, changed` or `steady`.
     pub reason: String,
+    /// The smoothed input temperature, or None until the first reading.
     pub smoothed_c: Option<f64>,
+    /// True while the CPU sensor is considered lost and the duty is forced to 100 %.
     pub panic: bool,
 }
 
@@ -35,10 +43,13 @@ pub fn interpolate(curve: &[(f64, f64)], temp_c: f64) -> f64 {
     curve[curve.len() - 1].1
 }
 
+/// Percent to the driver's 0..=255 byte, rounded and clamped.
 pub fn pct_to_pwm(pct: f64) -> u8 {
     (pct * 255.0 / 100.0).round().clamp(0.0, 255.0) as u8
 }
 
+/// The control law's state between ticks. Feed it one `step` per tick with the input
+/// temperature and the PWM read back from the device.
 pub struct Controller {
     cfg: Config,
     ema: Option<f64>,
@@ -54,6 +65,7 @@ pub struct Controller {
 }
 
 impl Controller {
+    /// A controller at the floor duty with no history.
     pub fn new(cfg: Config) -> Self {
         Controller {
             ema: None,
@@ -106,6 +118,8 @@ impl Controller {
         }
     }
 
+    /// One tick. `temp_c` is the input (None when the CPU sensor is missing), `now` a
+    /// monotonic time in seconds, `readback_pwm` what the device currently reports.
     pub fn step(&mut self, temp_c: Option<f64>, now: f64, readback_pwm: Option<u8>) -> Decision {
         let dt = self.last_time.map_or(0.0, |t| (now - t).max(0.0));
         self.last_time = Some(now);

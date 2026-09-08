@@ -8,6 +8,8 @@ use crate::state::write_state;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+/// The service loop's state: sensors, controller, PWM handle, failure counters and the
+/// last state written. `main.rs` calls [`Service::tick`] once per interval.
 pub struct Service {
     cfg: Config,
     root: PathBuf,
@@ -25,6 +27,8 @@ pub struct Service {
 }
 
 impl Service {
+    /// A service under a sysfs root with the given GPU source. In `dry_run` decisions are
+    /// made and recorded but nothing is written to the device.
     pub fn new(cfg: Config, root: PathBuf, gpu: Box<dyn GpuReader>, dry_run: bool) -> Self {
         Service {
             controller: Controller::new(cfg.clone()),
@@ -46,9 +50,11 @@ impl Service {
         }
     }
 
+    /// The control law, for callers that need to `kick` it or inspect it in tests.
     pub fn controller_mut(&mut self) -> &mut Controller {
         &mut self.controller
     }
+    /// Consecutive failed writes with the device present.
     pub fn write_failures(&self) -> u32 {
         self.write_failures
     }
@@ -56,9 +62,11 @@ impl Service {
     pub fn ready(&self) -> bool {
         self.ready
     }
+    /// The readings from the most recent tick.
     pub fn last_temps(&self) -> Temps {
         self.last_temps
     }
+    /// Seconds between ticks, from the config.
     pub fn interval_s(&self) -> f64 {
         self.cfg.interval_s
     }

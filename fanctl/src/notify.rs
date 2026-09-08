@@ -9,6 +9,7 @@ pub fn sd_notify(message: &str) -> bool {
     sd_notify_to(target.as_deref(), message)
 }
 
+/// Same as [`sd_notify`] with an explicit socket path (`@name` for an abstract socket).
 pub fn sd_notify_to(socket_path: Option<&str>, message: &str) -> bool {
     let Some(target) = socket_path.filter(|s| !s.is_empty()) else {
         return false;

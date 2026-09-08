@@ -3,13 +3,17 @@
 use std::fs;
 use std::path::Path;
 
+/// One tick's temperature readings. Either may be missing.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Temps {
+    /// CPU package temperature from coretemp.
     pub cpu_c: Option<f64>,
+    /// GPU core temperature from NVML.
     pub gpu_c: Option<f64>,
 }
 
 impl Temps {
+    /// The hotter of the two, or whichever is present.
     pub fn max_c(&self) -> Option<f64> {
         match (self.cpu_c, self.gpu_c) {
             (Some(c), Some(g)) => Some(c.max(g)),
@@ -77,7 +81,9 @@ pub fn cpu_package_c(root: &Path) -> Option<f64> {
     None
 }
 
+/// Source of the GPU temperature; a trait so the service can be tested without NVML.
 pub trait GpuReader {
+    /// The GPU core temperature in °C, or None if unavailable this tick.
     fn temp_c(&mut self) -> Option<f64>;
 }
 
@@ -118,6 +124,7 @@ impl GpuReader for NoGpu {
     }
 }
 
+/// Both inputs for one tick.
 pub fn read_temps(root: &Path, gpu: &mut dyn GpuReader) -> Temps {
     Temps {
         cpu_c: cpu_package_c(root),

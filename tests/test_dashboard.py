@@ -379,3 +379,17 @@ def test_controller_row_survives_huge_integers() -> None:
     state = {"duty_pct": 10**400, "smoothed_c": 47.2, "reason": "ok", "time": 10**400}
     r = row(lines(Snapshot(0, "Box", fans=[fan()], controller=state)), "Intake control")
     assert "?" in r and "STALE" in r
+
+
+def test_controller_row_turns_red_on_error_or_panic() -> None:
+    import time
+
+    from fanwatch.dashboard import Color, _controller_row
+
+    base = {"duty_pct": 100.0, "smoothed_c": 100.0, "reason": "steady", "time": time.time()}
+    text, color = _controller_row({**base, "error": None, "panic": False})
+    assert color is Color.MUTED
+    text, color = _controller_row({**base, "panic": True})
+    assert color is Color.RED and "PANIC" in text
+    text, color = _controller_row({**base, "error": "pwm write failed\x1b[2J"})
+    assert color is Color.RED and "pwm write failed" in text and "\x1b" not in text

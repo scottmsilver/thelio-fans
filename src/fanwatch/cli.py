@@ -19,6 +19,7 @@ MIN_INTERVAL, MAX_INTERVAL = 0.2, 3600.0
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
+    """The `fanwatch` command line; `--once`, `--json` and `--log` are mutually exclusive."""
     parser = argparse.ArgumentParser(prog="fanwatch", description=__doc__)
     parser.add_argument(
         "--interval",
@@ -123,6 +124,7 @@ def _run_log(interval: float) -> int:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    """Entry point: dispatch to the log, one-shot or live modes. Returns the exit status."""
     args = parse_args(argv)
     if args.log:
         return _run_log(args.interval)

@@ -27,6 +27,9 @@ THROTTLE_REASONS = (
 
 @dataclass(frozen=True, slots=True)
 class Gpu:
+    """One reading of the first NVIDIA GPU: temperature, thresholds, fans, load, power,
+    clocks, memory and any active throttle reasons. Missing values are None."""
+
     name: str
     temp_c: int | None
     slowdown_c: int | None
@@ -100,6 +103,8 @@ class NvmlSession:
             return False
 
     def read(self) -> Gpu | None:
+        """One reading, or None if NVML is unavailable; a failed reading closes the session
+        so the next call re-initialises."""
         if not self._open():
             return None
         try:
@@ -115,6 +120,7 @@ class NvmlSession:
         return gpu
 
     def close(self) -> None:
+        """Shut NVML down; safe to call repeatedly."""
         if self.nvml is None:
             return
         had_handle = self._handle is not None

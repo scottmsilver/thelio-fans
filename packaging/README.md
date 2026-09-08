@@ -2,7 +2,8 @@
 
 fanctl replaces system76-power's control of the intake fan. It is a Rust binary that runs
 as the unprivileged user `fanctl`, whose only writable hardware attribute is the Io
-board's `pwm2`, granted by the udev rule in this directory. Design:
+board's `pwm2`, granted by the udev rule in this directory. What it does and how it
+fails safe: [`../fanctl/README.md`](../fanctl/README.md). Design:
 `../docs/superpowers/specs/2026-09-08-fanctl-design.md`.
 
 ## 1. Build and try it, as yourself

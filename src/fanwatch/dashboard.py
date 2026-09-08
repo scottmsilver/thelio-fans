@@ -46,6 +46,8 @@ NOISE_TEMP_CHIPS = {"acpitz", "iwlwifi_1"}
 
 
 class Color(IntEnum):
+    """Colour pair indices shared by the pure renderers and the curses layer."""
+
     NORMAL = 0
     CYAN = 1
     GREEN = 2
@@ -71,6 +73,8 @@ Histories = Mapping[str, Sequence[int | None]]
 
 @dataclass(frozen=True, slots=True)
 class ChartGroup:
+    """One chart: its series, fixed axis range and optional limit rule."""
+
     title: str
     series: list[Series]
     y_min: float
@@ -137,6 +141,7 @@ def chart_groups(snapshot: Snapshot, histories: Histories) -> list[ChartGroup]:
 
 
 def core_readings(snapshot: Snapshot) -> list[tuple[str, float | None]]:
+    """(label, °C) per CPU core from coretemp, in label order, for the heat strip."""
     cores = [
         t for t in snapshot.temperatures if t.chip == "coretemp" and t.label.startswith("Core")
     ]
@@ -227,10 +232,15 @@ def _controller_row(state: dict[str, object]) -> Line:
     stale = " · STALE" if age > 10 else ""
     mode = " (dry run)" if state.get("dry_run") else ""
     reason = sanitize(str(state.get("reason", "")))[:80]
+    panic = " · PANIC" if state.get("panic") is True else ""
+    error = state.get("error")
+    trouble = f" · {sanitize(str(error))[:60]}" if isinstance(error, str) and error else ""
     text = (
         f"  {'Intake control':<{NAME_W}} fanctl{mode} · ema {num('smoothed_c', '{:.1f}')} °C"
-        f" · {num('duty_pct', '{:.0f}')}% · {reason}{stale}"
+        f" · {num('duty_pct', '{:.0f}')}% · {reason}{panic}{trouble}{stale}"
     )
+    if panic or trouble:
+        return (text, Color.RED)
     return (text, Color.YELLOW if stale else Color.MUTED)
 
 

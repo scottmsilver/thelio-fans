@@ -17,6 +17,9 @@ Span = tuple[str, int]  # text, colour pair index (see dashboard.Color and heat 
 
 @dataclass(frozen=True, slots=True)
 class Series:
+    """One line on a chart: newest value last. `heat=True` colours each point by its
+    temperature instead of by `color`, so the line matches the core strip."""
+
     name: str
     values: Sequence[float | None]
     color: int
@@ -115,6 +118,8 @@ def legend(
     limit_color: int = 4,
     heat_base: int = 20,
 ) -> list[Span]:
+    """One legend line: a dot in each series' colour with its current value, then the
+    limit rule's key if there is one."""
     spans: list[Span] = []
     for s in series:
         current = next((v for v in reversed(list(s.values)) if v is not None), None)

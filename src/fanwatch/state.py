@@ -12,6 +12,7 @@ MAX_STATE_BYTES = 64 * 1024
 
 
 def read_state(path: Path) -> dict[str, object] | None:
+    """The fanctl state file as a dict, or None if absent, malformed or not a regular file."""
     try:
         fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC)
     except OSError:
