@@ -260,3 +260,24 @@ def test_controller_state_is_attached_when_present(
     }
     monkeypatch.setattr(probe, "CONTROLLER_STATE", sysfs / "absent.json")
     assert collect(sysfs).controller is None
+
+
+def test_collector_shares_one_nvml_session_across_snapshots(sysfs: Path) -> None:
+    from fanwatch.gpu import NvmlSession
+    from fanwatch.probe import Collector
+    from tests.test_gpu import fake_nvml
+
+    nvml = fake_nvml()
+    inits: list[str] = []
+    real_init = nvml.nvmlInit
+
+    def counting_init() -> None:
+        inits.append("init")
+        real_init()
+
+    nvml.nvmlInit = counting_init
+    with Collector(sysfs, NvmlSession(nvml)) as fresh:
+        assert fresh().gpu is not None
+        assert fresh().gpu is not None
+        assert inits == ["init"] and nvml.calls == []
+    assert nvml.calls == ["shutdown"]

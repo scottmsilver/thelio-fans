@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Final
 
-from fanwatch.gpu import Gpu, read_gpu
+from fanwatch.gpu import Gpu, NvmlSession, read_gpu
 from fanwatch.state import read_state
 from fanwatch.text import sanitize
 
@@ -349,3 +349,30 @@ def collect(root: Path | str = "/sys", gpu_reader: GpuReader | None = None) -> S
     elif snapshot.controllers and not any(f.chip == "system76_io" for f in snapshot.fans):
         snapshot.alerts.append("System76 controller detected but its fan readings are unavailable")
     return snapshot
+
+
+class Collector:
+    """Repeated snapshots that share one NVML session.
+
+    `collect()` on its own initialises and shuts NVML down on every call, which is fine
+    for a one-shot read. Every polling loop (dashboard, log mode, fanstress) goes through
+    this instead, so the GPU is opened once and closed when the loop ends.
+    """
+
+    def __init__(self, root: Path | str = "/sys", session: NvmlSession | None = None) -> None:
+        self.root = Path(root)
+        self.session = NvmlSession() if session is None else session
+
+    def __enter__(self) -> Collector:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.close()
+
+    def __call__(self) -> Snapshot:
+        """One snapshot through the shared session."""
+        return collect(self.root, gpu_reader=self.session.read)
+
+    def close(self) -> None:
+        """Shut the NVML session down; safe to call repeatedly."""
+        self.session.close()

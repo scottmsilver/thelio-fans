@@ -139,3 +139,32 @@ def test_log_marks_unavailable_gpu_reasons_as_unknown() -> None:
     g = Gpu("RTX", 46, 95, 98, ((0, 0),), 4, 71.2, 350.0, 1665, 2100, 9501, 377, 12288, 0, ())
     snap = Snapshot(0, "m", fans=[fan()], controllers=[controller()], gpu=replace(g, reasons=None))
     assert "gpu_throttle=unknown" in (log_line(None, snap) or "")
+
+
+def test_log_mode_polls_through_one_collector(monkeypatch: pytest.MonkeyPatch) -> None:
+    events: list[str] = []
+
+    class FakeCollector:
+        def __init__(self) -> None:
+            self.reads = 0
+
+        def __enter__(self) -> "FakeCollector":
+            events.append("open")
+            return self
+
+        def __exit__(self, *exc: object) -> None:
+            events.append("close")
+
+        def __call__(self) -> Snapshot:
+            self.reads += 1
+            if self.reads > 2:
+                raise KeyboardInterrupt
+            return Snapshot(0, "Box", fans=[fan(rpm=100 * self.reads)])
+
+    monkeypatch.setattr("fanwatch.cli.Collector", FakeCollector)
+    monkeypatch.setattr("fanwatch.cli.time.sleep", lambda s: None)
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        assert main(["--log", "--interval", "0.5"]) == 0
+    assert events == ["open", "close"]
+    assert out.getvalue().count("\n") == 2

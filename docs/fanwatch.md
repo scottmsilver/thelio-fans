@@ -192,7 +192,7 @@ Layout, all under `src/fanwatch/`:
 | Module | Responsibility |
 |---|---|
 | `probe.py` | acquire a typed `Snapshot` from a sysfs root (any directory, which is how the tests work) |
-| `gpu.py` | the NVML reader, one session kept open across refreshes |
+| `gpu.py` | the NVML reader: `read_gpu` for a one-shot read, `NvmlSession` for polling loops, which the `Collector` in `probe.py` wraps so the dashboard, `--log` and fanstress open the GPU once |
 | `state.py` | hardened reader for fanctl's state file |
 | `text.py` | sanitising device-supplied text before it reaches a terminal |
 | `chart.py` | pure braille chart, legend, time axis and core heat strip, returning coloured spans |

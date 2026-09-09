@@ -1,7 +1,8 @@
 # Kernel drivers and host configuration
 
 Two drivers feed the dashboard, and one of them is also what fanctl writes through. One
-ships with Pop!_OS, one is vendored here.
+ships with Pop!_OS, one is vendored here. The NVIDIA section at the end records two
+host-side changes that are not part of this repository but that fanwatch depends on.
 
 ## system76-io (ships with Pop!_OS)
 
@@ -64,3 +65,37 @@ Update: `git -C drivers/it87 pull`, then `sudo make dkms` again. Remove:
 The it87 driver is read-only as used here. Neither fanwatch nor fanctl writes any
 `it8689` attribute, and its `pwm*_enable` values stay at 2 (automatic, BIOS curve). The
 CPU fans on the motherboard header are the BIOS's to drive.
+
+## NVIDIA (host configuration, outside this repository)
+
+Two changes were made on this host on 2026‑09‑08. Neither lives in the repository, so
+they are recorded here for the next time the driver package or the kernel changes.
+
+**Persistence mode.** Pop!_OS runs `nvidia-persistenced` with `--no-persistence-mode`,
+a laptop default that lets a discrete GPU power off. On a desktop that cannot do that,
+it means every NVML or `nvidia-smi` client tears the GPU down when it exits and the next
+client rebuilds it: about 1.5 s of kernel time per poll, and the card stuck in P0. That
+is what made the old `system76-power` fan poll so expensive. The dashboard, `--log` and
+fanstress hold one NVML session for their whole run (`Collector` in
+`src/fanwatch/probe.py`), so they are immune to the setting; `fanwatch --once`,
+`--json` and any other one-shot client are not. Keep persistence on with a drop-in:
+
+```ini
+# /etc/systemd/system/nvidia-persistenced.service.d/persistence-mode.conf
+[Service]
+ExecStart=
+ExecStart=/usr/bin/nvidia-persistenced --user nvidia-persistenced --persistence-mode --verbose
+```
+
+Apply with `sudo systemctl daemon-reload && sudo systemctl restart nvidia-persistenced`;
+check with `nvidia-smi --query-gpu=persistence_mode --format=csv`. Revert by deleting
+the file and repeating the two commands.
+
+**Module rebuild on kernel 7.0.** Pop's `nvidia-dkms` applies a `thunk-Kbuild.patch`
+that strips objtool from the build on kernel 7.0, leaving `nvidia.ko` without its
+`.return_sites` section and unable to load. `~/scripts/nvidia-rebuild-no-thunk-patch.sh`
+(not in this repository) comments the patch out of `dkms.conf`, rebuilds and reinstalls
+the module for the running kernel, and verifies the section is back. A driver package
+update restores `dkms.conf`, so **re-run the script after any NVIDIA package update or
+new kernel**, then reboot. Neither fanwatch nor fanctl depends on this beyond needing a
+loadable NVIDIA module for the GPU rows.

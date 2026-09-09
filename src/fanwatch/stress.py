@@ -15,8 +15,7 @@ from dataclasses import asdict, dataclass, field
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
-from fanwatch.gpu import NvmlSession
-from fanwatch.probe import Fan, Snapshot, collect
+from fanwatch.probe import Collector, Fan, Snapshot
 from fanwatch.text import sanitize
 
 if TYPE_CHECKING:
@@ -380,95 +379,95 @@ def run(args: argparse.Namespace) -> int:
     """Run the phases, printing one line per second, then the report."""
     from fanwatch.load import CpuLoad, OpenClLoad, gpu_load
 
-    nvml = NvmlSession()
+    with Collector() as fresh:
 
-    def sample(phase: str) -> Sample:
-        return sample_from(collect(gpu_reader=nvml.read), phase, now=time.monotonic())
+        def sample(phase: str) -> Sample:
+            return sample_from(fresh(), phase, now=time.monotonic())
 
-    first = sample("idle")
-    snapshot = collect(gpu_reader=nvml.read)
-    max_gpu = args.max_gpu_c
-    if max_gpu is None:
-        slowdown = None if snapshot.gpu is None else snapshot.gpu.slowdown_c
-        max_gpu = DEFAULT_MAX_GPU_C if slowdown is None else max(MIN_LIMIT_C, slowdown - 5)
-    limits = Limits(args.max_cpu_c, max_gpu)
-    throttle_baseline = first.throttle_events
-    if throttle_baseline is None:
-        print("no CPU throttle counter in sysfs: throttling is not guarded", file=sys.stderr)
-    print(
-        f"limits: CPU {limits.max_cpu_c:.0f} °C, GPU {limits.max_gpu_c:.0f} °C, "
-        f"throttle counter at {throttle_baseline}; Ctrl-C stops the load",
-        file=sys.stderr,
-    )
-    preflight = guard(first, limits, throttle_baseline=throttle_baseline)
-    if preflight:
-        print(f"not starting: {preflight}", file=sys.stderr)
-        nvml.close()
-        return 1
-    # The GPU load is created only for the phases that use it and released right after:
-    # an open OpenCL context keeps the card in its high-power state (about 100 W on this
-    # one), which would ruin the idle and recovery phases.
-    gpu: OpenClLoad | None = None
-    gpu_desc: str | None = None
-    gpu_missing: str | None = None
-    cpu = CpuLoad(args.workers)
-    samples: list[Sample] = []
-    aborted: str | None = None
-    active: list[Load] = []
-    try:
-        for phase in args.phases:
-            if phase in ("gpu", "both") and gpu_missing:
-                continue
-            aborted = guard(sample(phase), limits, throttle_baseline=throttle_baseline)
-            if aborted:
-                break
-            active = []
-            if phase in ("cpu", "both"):
-                active.append(cpu)
-            if phase in ("gpu", "both"):
-                gpu, reason = gpu_load()  # runs one short calibration kernel
-                if gpu is None:
-                    gpu_missing = reason
-                    gpu_desc = gpu_desc or f"unavailable ({reason}), GPU phases skipped"
-                    print(f"GPU load unavailable: {reason}; skipping GPU phases", file=sys.stderr)
+        first = sample("idle")
+        snapshot = fresh()
+        max_gpu = args.max_gpu_c
+        if max_gpu is None:
+            slowdown = None if snapshot.gpu is None else snapshot.gpu.slowdown_c
+            max_gpu = DEFAULT_MAX_GPU_C if slowdown is None else max(MIN_LIMIT_C, slowdown - 5)
+        limits = Limits(args.max_cpu_c, max_gpu)
+        throttle_baseline = first.throttle_events
+        if throttle_baseline is None:
+            print("no CPU throttle counter in sysfs: throttling is not guarded", file=sys.stderr)
+        print(
+            f"limits: CPU {limits.max_cpu_c:.0f} °C, GPU {limits.max_gpu_c:.0f} °C, "
+            f"throttle counter at {throttle_baseline}; Ctrl-C stops the load",
+            file=sys.stderr,
+        )
+        preflight = guard(first, limits, throttle_baseline=throttle_baseline)
+        if preflight:
+            print(f"not starting: {preflight}", file=sys.stderr)
+            return 1
+        # The GPU load is created only for the phases that use it and released right after:
+        # an open OpenCL context keeps the card in its high-power state (about 100 W on this
+        # one), which would ruin the idle and recovery phases.
+        gpu: OpenClLoad | None = None
+        gpu_desc: str | None = None
+        gpu_missing: str | None = None
+        cpu = CpuLoad(args.workers)
+        samples: list[Sample] = []
+        aborted: str | None = None
+        active: list[Load] = []
+        try:
+            for phase in args.phases:
+                if phase in ("gpu", "both") and gpu_missing:
                     continue
-                gpu_desc = gpu_desc or reason
-                active.append(gpu)
-            for load in active:
-                load.start()
-            end = time.monotonic() + args.seconds
-            while time.monotonic() < end:
-                tick = time.monotonic()
-                s = sample(phase)
-                samples.append(s)
-                # Safety first: decide and stop before anything that could block on output.
-                aborted = guard(s, limits, throttle_baseline=throttle_baseline)
-                if aborted is None:
-                    aborted = next((f for f in (load.failure() for load in active) if f), None)
-                if aborted:
-                    for load in active:
-                        load.stop()
-                    active = []
-                print(_live_line(s), flush=True)
+                aborted = guard(sample(phase), limits, throttle_baseline=throttle_baseline)
                 if aborted:
                     break
-                time.sleep(max(0.0, 1.0 - (time.monotonic() - tick)))
+                active = []
+                if phase in ("cpu", "both"):
+                    active.append(cpu)
+                if phase in ("gpu", "both"):
+                    gpu, reason = gpu_load()  # runs one short calibration kernel
+                    if gpu is None:
+                        gpu_missing = reason
+                        gpu_desc = gpu_desc or f"unavailable ({reason}), GPU phases skipped"
+                        print(
+                            f"GPU load unavailable: {reason}; skipping GPU phases", file=sys.stderr
+                        )
+                        continue
+                    gpu_desc = gpu_desc or reason
+                    active.append(gpu)
+                for load in active:
+                    load.start()
+                end = time.monotonic() + args.seconds
+                while time.monotonic() < end:
+                    tick = time.monotonic()
+                    s = sample(phase)
+                    samples.append(s)
+                    # Safety first: decide and stop before anything that could block on output.
+                    aborted = guard(s, limits, throttle_baseline=throttle_baseline)
+                    if aborted is None:
+                        aborted = next((f for f in (load.failure() for load in active) if f), None)
+                    if aborted:
+                        for load in active:
+                            load.stop()
+                        active = []
+                    print(_live_line(s), flush=True)
+                    if aborted:
+                        break
+                    time.sleep(max(0.0, 1.0 - (time.monotonic() - tick)))
+                for load in active:
+                    load.stop()
+                active = []
+                if gpu is not None:
+                    gpu.release()
+                    gpu = None
+                if aborted:
+                    break
+        except KeyboardInterrupt:
+            aborted = "interrupted"
+        finally:
             for load in active:
                 load.stop()
-            active = []
             if gpu is not None:
                 gpu.release()
-                gpu = None
-            if aborted:
-                break
-    except KeyboardInterrupt:
-        aborted = "interrupted"
-    finally:
-        for load in active:
-            load.stop()
-        if gpu is not None:
-            gpu.release()
-        nvml.close()
     summaries = summarise(samples)
     if args.json:
         payload = {

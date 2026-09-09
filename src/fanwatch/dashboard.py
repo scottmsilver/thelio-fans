@@ -23,11 +23,11 @@ from fanwatch.probe import (
     IDLE_STOP_CHIPS,
     IO_DRIVER,
     STALL_SAMPLES,
+    Collector,
     Fan,
     Snapshot,
     Temperature,
     Throttle,
-    collect,
 )
 from fanwatch.text import sanitize
 
@@ -484,6 +484,11 @@ def draw_chart(
 
 def run(screen: curses.window, interval: float) -> None:
     """Interactive loop: sample, render, handle keys. Read-only throughout."""
+    with Collector() as fresh:
+        _run(screen, interval, fresh)
+
+
+def _run(screen: curses.window, interval: float, fresh: Collector) -> None:
     with contextlib.suppress(curses.error):
         curses.curs_set(0)
     screen.keypad(True)
@@ -531,7 +536,7 @@ def run(screen: curses.window, interval: float) -> None:
     while True:
         now = time.monotonic()
         if snapshot is None or (not paused and now >= due):
-            snapshot = collect()
+            snapshot = fresh()
             _record(histories, snapshot)
             due = time.monotonic() + interval
         height, width = screen.getmaxyx()

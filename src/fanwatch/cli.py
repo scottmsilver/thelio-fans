@@ -12,7 +12,7 @@ from collections.abc import Sequence
 from dataclasses import asdict
 
 from fanwatch import dashboard
-from fanwatch.probe import Snapshot, collect
+from fanwatch.probe import Collector, Snapshot, collect
 
 RPM_JITTER = 5  # percent; smaller RPM changes are not logged
 MIN_INTERVAL, MAX_INTERVAL = 0.2, 3600.0
@@ -114,11 +114,12 @@ class LogTracker:
 def _run_log(interval: float) -> int:
     tracker = LogTracker()
     try:
-        while True:
-            line = tracker.observe(collect())
-            if line:
-                print(line, flush=True)
-            time.sleep(interval)
+        with Collector() as fresh:
+            while True:
+                line = tracker.observe(fresh())
+                if line:
+                    print(line, flush=True)
+                time.sleep(interval)
     except KeyboardInterrupt:
         return 0
 

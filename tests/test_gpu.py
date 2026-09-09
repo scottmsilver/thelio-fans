@@ -145,7 +145,8 @@ def test_session_initialises_once_and_recovers_from_errors() -> None:
         assert inits == ["init"] and nvml.calls == []  # no shutdown between reads
         good_temperature = nvml.nvmlDeviceGetTemperature
         nvml.nvmlDeviceGetTemperature = lost
-        assert session.read() is None  # session closed, reported as unavailable
+        stale = session.read()  # reading kept, but the session is closed as stale
+        assert stale is not None and stale.temp_c is None
         assert nvml.calls == ["shutdown"]
         nvml.nvmlDeviceGetTemperature = good_temperature
         assert session.read() is not None  # re-initialised on the next read
@@ -158,3 +159,29 @@ def test_session_without_nvml_reads_none() -> None:
 
     with NvmlSession(None) as session:
         assert session.read() is None
+
+
+def test_read_gpu_keeps_a_reading_without_a_temperature() -> None:
+    nvml = fake_nvml()
+
+    def unsupported(h: object, k: int) -> int:
+        raise FakeError("unsupported")
+
+    nvml.nvmlDeviceGetTemperature = unsupported
+    gpu = read_gpu(nvml)
+    assert gpu is not None and gpu.temp_c is None
+    assert nvml.calls == ["shutdown"]
+
+
+def test_session_shuts_down_when_the_handle_lookup_fails() -> None:
+    from fanwatch.gpu import NvmlSession
+
+    nvml = fake_nvml()
+
+    def no_device(index: int) -> object:
+        raise FakeError("no device")
+
+    nvml.nvmlDeviceGetHandleByIndex = no_device
+    with NvmlSession(nvml) as session:
+        assert session.read() is None
+    assert nvml.calls == ["shutdown"]

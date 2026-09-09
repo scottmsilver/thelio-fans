@@ -54,34 +54,25 @@ def _short_name(name: str) -> str:
 
 
 def read_gpu(nvml: Any = _pynvml) -> Gpu | None:
-    """Read the first GPU. Returns None when NVML or the driver is unavailable.
+    """Read the first GPU once. Returns None when NVML or the driver is unavailable.
 
-    Every call crosses into a native library, so any exception at that boundary is
-    treated as "unavailable" rather than allowed to take the dashboard down.
+    A one-shot session: NVML is initialised and shut down around the read. Callers that
+    poll should hold an `NvmlSession` instead.
     """
-    if nvml is None:
-        return None
-    try:
-        nvml.nvmlInit()
-    except Exception:
-        return None
-    try:
-        return _read(nvml, nvml.nvmlDeviceGetHandleByIndex(0))
-    except Exception:
-        return None
-    finally:
-        with contextlib.suppress(Exception):
-            nvml.nvmlShutdown()
+    with NvmlSession(nvml) as session:
+        return session.read()
 
 
 class NvmlSession:
     """Keep NVML initialised across reads. Initialising it costs tens of milliseconds of
-    system time, which matters for a loop that runs every second. Any error closes the
+    system time with persistence mode on, and about 1.5 s of GPU init and teardown with
+    it off, which matters for a loop that runs every second. Any error closes the
     session and the next read re-initialises, so a driver restart is survivable."""
 
     def __init__(self, nvml: Any = _pynvml) -> None:
         self.nvml = nvml
         self._handle: Any = None
+        self._initialised = False
 
     def __enter__(self) -> NvmlSession:
         return self
@@ -96,6 +87,7 @@ class NvmlSession:
             return False
         try:
             self.nvml.nvmlInit()
+            self._initialised = True
             self._handle = self.nvml.nvmlDeviceGetHandleByIndex(0)
             return True
         except Exception:
@@ -103,8 +95,8 @@ class NvmlSession:
             return False
 
     def read(self) -> Gpu | None:
-        """One reading, or None if NVML is unavailable; a failed reading closes the session
-        so the next call re-initialises."""
+        """One reading, or None if NVML is unavailable. A failed or temperature-less
+        reading closes the session so the next call re-initialises."""
         if not self._open():
             return None
         try:
@@ -114,18 +106,16 @@ class NvmlSession:
             return None
         if gpu.temp_c is None:
             # The one reading we exist for failed: assume the handle is stale (driver
-            # restart, device reset) and start over next time.
+            # restart, device reset) and start over next time. The rest of the reading
+            # is still worth showing.
             self.close()
-            return None
         return gpu
 
     def close(self) -> None:
         """Shut NVML down; safe to call repeatedly."""
-        if self.nvml is None:
-            return
-        had_handle = self._handle is not None
         self._handle = None
-        if had_handle:
+        if self._initialised:
+            self._initialised = False
             with contextlib.suppress(Exception):
                 self.nvml.nvmlShutdown()
 
