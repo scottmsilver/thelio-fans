@@ -8,6 +8,7 @@ started it all.
 | Part | What it is | Language | Docs |
 |---|---|---|---|
 | **fanwatch** | Terminal dashboard: every fan, every temperature, CPU and GPU throttling, the Io board's USB state, and charts over the last ten minutes. Never writes to hardware. | Python (`src/fanwatch/`) | [docs/fanwatch.md](docs/fanwatch.md) |
+| **fanstress** | Loads every CPU core, then the GPU, then both, and reports how each fan answered: start and peak RPM, seconds to respond, a verdict. Stops the load at a temperature limit or the first throttle event. Same package as fanwatch. | Python (`src/fanwatch/stress.py`) | [docs/fanwatch.md](docs/fanwatch.md#fanstress-exercising-the-fans) |
 | **fanctl** | Systemd service that drives the chassis intake fan on a smooth curve with a never-stop floor. Runs as its own user; the only file it can write on the whole system is that fan's PWM attribute. | Rust (`fanctl/`) | [fanctl/README.md](fanctl/README.md), [packaging/README.md](packaging/README.md) |
 | **drivers** | The out-of-tree `it87` module for the board's IT8689E chip, the host config that loads it, and what was learned about the Thelio Io board and its driver. | C (vendored), config | [drivers/README.md](drivers/README.md) |
 
@@ -56,6 +57,7 @@ Three things followed, and this repository holds all three:
 # Dashboard (no root, no writes)
 uv sync
 uv run fanwatch                 # live; --once, --json, --log for other modes
+uv run fanstress --seconds 60   # five phases of load, one report; needs no root
 
 # Controller: build and watch it decide before it touches anything
 packaging/build.sh
@@ -75,7 +77,8 @@ still runs and simply lacks that row.
 ## Layout
 
 ```
-src/fanwatch/     dashboard package: probe (sysfs), gpu (NVML), chart, dashboard, cli, state, text
+src/fanwatch/     dashboard package: probe (sysfs), gpu (NVML), chart, dashboard, cli, state, text,
+                  plus stress (the fanstress run and report) and load (CPU and OpenCL GPU load)
 tests/            pytest suite against fake sysfs trees; no hardware needed
 fanctl/           Rust crate: config, controller, sensors, pwm, service, state, notify, main
 fanctl/tests/     cargo integration tests, one file per module

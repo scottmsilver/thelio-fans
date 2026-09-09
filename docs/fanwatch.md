@@ -125,6 +125,59 @@ means the cable, not the software. See [drivers/README.md](../drivers/README.md)
 
 Known channel names live in one place, `KNOWN_CHANNELS` in `src/fanwatch/probe.py`.
 
+## fanstress: exercising the fans
+
+`fanstress` puts load on the machine and watches the same sensors the dashboard reads,
+to answer "do the fans actually respond, and how fast?"
+
+```sh
+uv run fanstress                      # idle, cpu, gpu, both, recovery: 60 s each
+uv run fanstress --seconds 20 --phases cpu,recovery
+uv run fanstress --json               # the summaries as JSON
+```
+
+| Phase | Load |
+|---|---|
+| `idle` | none, a baseline |
+| `cpu` | one busy process per core (`--workers` to change) |
+| `gpu` | a fused-multiply-add kernel run back to back through OpenCL |
+| `both` | the two together |
+| `recovery` | none, to watch the fans wind down |
+
+The GPU load needs no extra packages: it calls the `libOpenCL.so` that ships with the
+NVIDIA driver through ctypes, sizes each kernel launch to about 50 ms from a short timed
+calibration run, and assumes the first OpenCL GPU is the one NVML reports as device 0.
+The OpenCL context is opened at the start of each GPU phase and closed at its end,
+because an open context alone holds the card in its high-power state, about 100 W on an
+RTX 3080 Ti, which would spoil the idle and recovery phases. If OpenCL is missing the GPU
+phases are skipped and the report says so.
+
+Safety comes first in the loop: every second the tool samples, checks the limits, and
+stops all load before it prints anything. Load stops when the CPU package reaches
+`--max-cpu-c` (default 90), the GPU reaches `--max-gpu-c` (default: its slowdown
+threshold minus 5), the kernel's package throttle counter moves, a reading it relies on
+goes missing, or Ctrl-C is pressed. Worker processes are daemonic and are joined, then
+killed, on every exit path. The exit status is 1 when a limit stopped the run.
+
+The report has one block per phase: start and peak CPU and GPU temperature, peak GPU
+power, and for every fan its start and peak RPM and duty, the seconds until it first
+rose (10 % in RPM or 2 points of duty), and a verdict: `responded`, `flat`, `stopped`
+(zero RPM for three consecutive samples while commanded on), or `unknown` (no RPM and
+no duty). A fan that reports duty only, like the card's second fan under NVML, is
+judged by its duty.
+
+```
+gpu          6 s   CPU 40→54 °C   GPU 49→63 °C (peak 298 W)
+  INTAKE FAN                         450→450 rpm     25→27 %  responded after 5 s
+  CPU FAN (motherboard header)       782→971 rpm     26→26 %  responded after 3 s
+  GPU FAN 1                              0→0 rpm       0→0 %  flat
+  GPU FAN 2                                    —       0→0 %  flat
+```
+
+Short phases are fine for a smoke test but the NVIDIA fans only start above about
+60 °C, so give the GPU phase a minute to see them answer. On this machine the intake fan
+answers within a few seconds because fanctl feeds the hotter of CPU and GPU into its curve.
+
 ## Development
 
 ```sh
@@ -145,5 +198,7 @@ Layout, all under `src/fanwatch/`:
 | `chart.py` | pure braille chart, legend, time axis and core heat strip, returning coloured spans |
 | `dashboard.py` | builds the screen from a `Snapshot` and history; `build_lines` and the chart groups are pure and tested without a terminal; only `run()` touches curses |
 | `cli.py` | the `fanwatch` entry point and its four modes |
+| `stress.py` | the `fanstress` entry point: phases, the safety guard, per-phase summaries and the report; the pure parts are tested without hardware |
+| `load.py` | CPU load processes and the OpenCL GPU load |
 
 Python 3.12+. Every public class and function has a docstring.
